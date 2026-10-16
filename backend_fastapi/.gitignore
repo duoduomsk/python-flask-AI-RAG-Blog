@@ -1,0 +1,199 @@
+# ==========================================================================
+# 通用
+# ==========================================================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+
+# ==========================================================================
+# 环境变量
+#   - 忽略：本地覆盖和敏感配置
+#   - 保留：.env.example（模板）
+#          .env.development / .env.production（Vite/Vue CLI 的默认配置，通常不含密钥）
+# ==========================================================================
+.env
+.env.local
+.env.*.local
+
+!.env.example
+
+# ==========================================================================
+# Python
+# ==========================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 虚拟环境
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# 构建产物
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# 测试 / 类型 / lint 缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+nosetests.xml
+*.cover
+
+# ==========================================================================
+# Node / Vue / Vite / Vue CLI
+# ==========================================================================
+node_modules/
+jspm_packages/
+
+# 构建产物
+dist/
+build/
+dist-ssr/
+*.local
+
+# Vite 缓存
+.vite/
+front/node_modules/.vite/
+
+# Vue CLI 缓存
+node_modules/.cache/
+
+# 包管理器日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# 编辑器 / 工具缓存
+.eslintcache
+.stylelintcache
+.cache/
+.parcel-cache/
+
+# PWA / 静态生成
+.swc/
+front/public/static/
+
+# ==========================================================================
+# 上传目录
+#   - 忽略用户上传的图片
+#   - 保留目录结构（用 .gitkeep 占位）
+# ==========================================================================
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+backend_fastapi/uploads/*
+!backend_fastapi/uploads/.gitkeep
+
+# ==========================================================================
+# 日志 / PID / 临时文件
+# ==========================================================================
+*.log
+logs/
+*.pid
+*.seed
+*.pid.lock
+tmp/
+temp/
+
+# ==========================================================================
+# Celery
+# ==========================================================================
+celerybeat-schedule
+celerybeat-schedule.*
+celerybeat.pid
+celerybeat.db
+
+# ==========================================================================
+# 数据库 / SQLite（本地调试可能产生）
+# ==========================================================================
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# MySQL dump（本地备份，不提交）
+*.sql.gz
+*.dump
+
+# ==========================================================================
+# IDE / 编辑器
+# ==========================================================================
+# VS Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+
+# JetBrains（PyCharm / WebStorm / IDEA）
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Sublime
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+
+# VSCode 本地历史
+.history/
+
+# ==========================================================================
+# Docker（预埋）
+# ==========================================================================
+# 本地覆盖文件（含本机端口、密码等）
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# 卷挂载目录
+data/
+volumes/
+
+# ==========================================================================
+# 其他
+# ==========================================================================
+# Jupyter（如果以后加 notebook）
+.ipynb_checkpoints/
+
+# 备份文件
+*.bak
+*.backup
+*.old
+
+# 密钥文件（保险起见）
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+
+# ==========================================================================
+# 明确不忽略（即使上面命中了，也强制保留）
+# ==========================================================================
+!README.md
+!LICENSE
+!requirements.txt
+!package.json
+!package-lock.json
+!pnpm-lock.yaml
+!yarn.lock
+!.gitignore
