@@ -1,12 +1,18 @@
 import os
 
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
+
 from routes.auth import auth_bp
 from routes.ai import ai_bp
 from routes.article import article_bp
 from routes.upload import upload_bp
 from routes.role import role_bp
+
+from backend.config import SECRET_KEY
+from backend.limiter import limiter
+from backend.cache import get_redis
 
 app = Flask(__name__)
 
@@ -37,7 +43,16 @@ CORS(
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 )
 
-app.config['SECRET_KEY'] = 'your-very-secret-key-123!@#'
+# 信任 nginx 转发的一跳真实 IP（否则限流看到的 remote_addr 全是容器 IP）
+app.wsgi_app = ProxyFix(
+    app.wsgi_app, x_for=1, x_proto=1, x_host=0, x_port=0, x_prefix=0
+)
+
+
+app.config['SECRET_KEY'] = SECRET_KEY
+
+# 初始化限流（与 app 解耦，避免循环导入）
+limiter.init_app(app)
 
 @app.before_request
 def handle_options():
@@ -47,6 +62,36 @@ def handle_options():
 @app.route('/')
 def home():
     return 'Flask started successfully.'
+
+@app.route('/healthz')
+def healthz():
+    """健康检查：DB 与 Redis 连通性。DB 挂才 503，Redis 挂仅告警。"""
+    checks = {"db": "unknown", "redis": "unknown"}
+
+    try:
+        from backend.database import engine
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        checks["db"] = "ok"
+    except Exception as e:
+        checks["db"] = f"error: {e}"
+
+    try:
+        r = get_redis()
+        if r.ping():
+            checks["redis"] = "ok"
+        else:
+            checks["redis"] = "no-pong"
+    except Exception as e:
+        checks["redis"] = f"error: {e}"
+
+    # Redis 是可降级依赖，只有 DB 挂了才视为不健康
+    healthy = checks["db"] == "ok"
+    return (
+        jsonify({"status": 0 if healthy else 1, "checks": checks}),
+        200 if healthy else 503,
+    )
 
 # 注册蓝图
 app.register_blueprint(auth_bp)

@@ -1,18 +1,41 @@
 # routes/auth.py
 from flask import Blueprint, current_app, request, jsonify
-#数据库
+# 数据库
 from sqlalchemy import text
 from backend.database import engine
 # 加密库
-from werkzeug.security import generate_password_hash,check_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 # jwt
 import datetime
 import jwt
 from backend.middleware import token_required
 
+# 导入限流器与 Redis
+from backend.limiter import limiter
+from backend.cache import get_redis
+from flask_limiter.util import get_remote_address
+
 auth_bp = Blueprint('auth', __name__)
 
+
+# ------------------------------------------------------------
+# 登录限流键函数：按「IP+用户名」双维度限流
+# 既能防单IP爆破，又能防分布式多IP打同一个账号
+# ------------------------------------------------------------
+def get_login_key():
+    # silent=True 避免请求体不是JSON时报错
+    data = request.get_json(silent=True) or {}
+    username = data.get('username', '')
+    if not username:
+        return get_remote_address()
+    return f"{get_remote_address()}:{username}"
+
+
+# ------------------------------------------------------------
+# 注册接口：3 次/小时/IP
+# ------------------------------------------------------------
 @auth_bp.route('/api/register', methods=['POST'])
+@limiter.limit("3/hour")  # 限流：3次/小时/IP
 def register():
     data = request.get_json()
     username = data.get('username')
@@ -28,49 +51,47 @@ def register():
     banned_passwords = ['......', '******', 'password']
     if password.strip() in banned_passwords:
         return {"status": 1, "msg": "密码过于简单或包含非法字符，请重新设置"}, 400
-    
+
     # 获取角色，默认为 user
-    # role = data.get('role', 'user') # Old logic
-    role_id = data.get('role_id') # New logic, if passed
-    
+    role_id = data.get('role_id')  # New logic, if passed
+
     with engine.connect() as conn:
         # 如果没有指定role_id，默认使用 'user' 角色的ID
         if not role_id:
             role_id = conn.execute(text("SELECT id FROM roles WHERE name='user'")).scalar()
-            
+
         # 判断用户名是否存在
         existing_user = conn.execute(
             text("SELECT * FROM users WHERE username=:username"), {"username": username}
         ).fetchone()
 
         if existing_user:
-            return {"status": 1, "msg": "用户名已存在","data":{
-        'success': False,
-    }}, 400
+            return {"status": 1, "msg": "用户名已存在", "data": {
+                'success': False,
+            }}, 400
 
         # 密码加密
         hashed_password = generate_password_hash(password)
 
-        # 插入新用户 (Insert role_id instead of role string, though we might still have role string column? 
-        # I kept the column in migration, but let's see. 
-        # Actually I didn't drop 'role' column in migration script, I just added role_id.
-        # So I should populate both for compatibility or just role_id.
-        # Let's populate role_id. The 'role' column might be deprecated.
-        # But wait, 'role' column is NOT NULL? Need to check schema. 
-        # Assuming 'role' column allows null or default, or we update it too.
-        # To be safe, let's fetch role name for 'role' column.
+        # 获取角色名称用于兼容旧字段
         role_name = conn.execute(text("SELECT name FROM roles WHERE id=:id"), {"id": role_id}).scalar()
-        
+
         conn.execute(
-            text("INSERT INTO users (username, password, avatar, role, role_id, email) VALUES (:username, :password, :avatar, :role, :role_id, :email)"),
-            {"username": username, "password": hashed_password, "avatar": avatar or '', "role": role_name, "role_id": role_id, "email": email}
+            text(
+                "INSERT INTO users (username, password, avatar, role, role_id, email) VALUES (:username, :password, :avatar, :role, :role_id, :email)"),
+            {"username": username, "password": hashed_password, "avatar": avatar or '', "role": role_name,
+             "role_id": role_id, "email": email}
         )
         conn.commit()
 
-    return {'status': 0, "msg": "注册成功","data":{
+    return {'status': 0, "msg": "注册成功", "data": {
         'success': True,
     }}
 
+
+# ------------------------------------------------------------
+# 获取用户信息
+# ------------------------------------------------------------
 @auth_bp.route('/api/user/info', methods=['GET'])
 @token_required
 def get_user_info(current_user_id):
@@ -79,39 +100,58 @@ def get_user_info(current_user_id):
             text("SELECT id, username, avatar, role, role_id, email, created_at FROM users WHERE id=:id"),
             {"id": current_user_id}
         ).mappings().fetchone()
-        
+
     if user:
         user_data = dict(user)
         if user_data.get('created_at'):
             user_data['created_at'] = user_data['created_at'].strftime('%Y-%m-%d')
-        # Avue 需要 roles 数组
+
         # Avue 需要 roles 数组
         user_data['roles'] = [user_data.get('role', 'user')]
-        
+
         # 权限列表，根据角色ID查询 permissions 表
         permissions = []
         if user_data.get('role_id'):
             with engine.connect() as conn:
                 perms = conn.execute(text("""
-                    SELECT p.code FROM permissions p
-                    JOIN role_permissions rp ON p.id = rp.permission_id
-                    WHERE rp.role_id = :rid
-                """), {"rid": user_data['role_id']}).scalars().all()
+                      SELECT p.code
+                      FROM permissions p
+                               JOIN role_permissions rp ON p.id = rp.permission_id
+                      WHERE rp.role_id = :rid
+                      """), {"rid": user_data['role_id']}).scalars().all()
                 permissions = list(perms)
-        
+
         user_data['permissions'] = permissions
         return jsonify({'status': 0, 'data': user_data})
-    
+
     return jsonify({'status': 1, 'msg': '用户不存在'}), 404
 
+
+# ------------------------------------------------------------
+# 登录接口：挂载限流 + 失败计数器
+# ------------------------------------------------------------
 @auth_bp.route('/api/login', methods=['POST'])
+@limiter.limit("5/minute", key_func=get_login_key)  # 限流：IP+用户名 5次/分钟
 def login():
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
+
     # 验证输入
     if not username or not password:
         return jsonify({'status': 1, 'msg': '用户名和密码不能为空'}), 400
+
+    r = get_redis()
+    fail_key = f"blog:login:fail:{username}"
+
+    # ⚠️ 增强安全：检查失败计数器（防分布式爆破）
+    try:
+        fails = int(r.get(fail_key) or 0)
+        if fails >= 10:
+            return jsonify({'status': 1, 'msg': '该账号由于失败次数过多已被暂时锁定，请15分钟后再试'}), 429
+    except Exception as e:
+        # Redis 异常时 fail-open 放行，避免全站登录瘫痪
+        print(f"Redis login fail check error: {e}")
 
     try:
         with engine.connect() as conn:
@@ -122,15 +162,22 @@ def login():
             ).mappings().fetchone()
 
         if result and check_password_hash(result['password'], password):
+            # 登录成功，清空失败计数器
+            try:
+                r.delete(fail_key)
+            except Exception as e:
+                print(f"Redis delete fail count error: {e}")
+
             # 获取权限列表
             permissions = []
             if result.get('role_id'):
                 with engine.connect() as conn:
                     perms = conn.execute(text("""
-                        SELECT p.code FROM permissions p
-                        JOIN role_permissions rp ON p.id = rp.permission_id
-                        WHERE rp.role_id = :rid
-                    """), {"rid": result['role_id']}).scalars().all()
+                          SELECT p.code
+                          FROM permissions p
+                                   JOIN role_permissions rp ON p.id = rp.permission_id
+                          WHERE rp.role_id = :rid
+                          """), {"rid": result['role_id']}).scalars().all()
                     permissions = list(perms)
 
             # 生成JWT token
@@ -143,38 +190,50 @@ def login():
                 'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
             }, current_app.config['SECRET_KEY'], algorithm='HS256')
 
-            return jsonify({'status': 0, 'msg': '登录成功','data':{
-                'id':result['id'],
-                'username':result['username'],
+            return jsonify({'status': 0, 'msg': '登录成功', 'data': {
+                'id': result['id'],
+                'username': result['username'],
                 'role': result.get('role', 'user'),
                 'email': result.get('email'),
                 'permissions': permissions,
-                'token':token,
+                'token': token,
             }})
+
+        # 登录失败，增加失败计数（15分钟窗口，10次失败锁账号）
+        try:
+            r.incr(fail_key)
+            r.expire(fail_key, 900)  # 900秒 = 15分钟
+        except Exception as e:
+            print(f"Redis incr login fail error: {e}")
+
         return jsonify({'status': 1, 'msg': '用户名或密码错误'}), 401
     except Exception as e:
         return jsonify({'status': 1, 'msg': '登录失败', 'error': str(e)}), 500
 
+
+# ------------------------------------------------------------
+# 获取用户列表
+# ------------------------------------------------------------
 @auth_bp.route('/api/users', methods=['GET'])
 def get_users():
     try:
         username = request.args.get('username')
         email = request.args.get('email')
-        
+
         with engine.connect() as conn:
             sql = "SELECT id, username, avatar, created_at, role, role_id, email FROM users WHERE 1=1"
             params = {}
-            
+
             if username:
                 sql += " AND username LIKE :username"
                 params['username'] = f"%{username}%"
-            
+
             if email:
                 sql += " AND email LIKE :email"
                 params['email'] = f"%{email}%"
-                
+
             sql += " ORDER BY created_at DESC"
-            
+
             result = conn.execute(text(sql), params).mappings().fetchall()
             users = []
             for row in result:
@@ -186,48 +245,10 @@ def get_users():
     except Exception as e:
         return jsonify({'status': 1, 'msg': '获取用户列表失败', 'error': str(e)}), 500
 
-    #以下源代码存在UI回显漏洞，如果感兴趣可以自行启用这段代码体验
-    # 在管理端将你自己创建的用户状态从user改为admin（不修改密码），在管理端登录不了，而改回去后（不修改密码）在用户端也登录不了了
-    # @auth_bp.route('/api/users/<int:user_id>', methods=['PUT'])
-    # def update_user(user_id):
-    #     data = request.get_json()
-    #     username = data.get('username')
-    #     avatar = data.get('avatar')
-    #     password = data.get('password')
-    #     role_id = data.get('role_id') # Accept role_id
-    #     email = data.get('email')
-    # try:
-    #     with engine.connect() as conn:
-    #         # 检查用户是否存在
-    #         existing = conn.execute(text("SELECT * FROM users WHERE id=:id"), {"id": user_id}).fetchone()
-    #         if not existing:
-    #             return jsonify({'status': 1, 'msg': '用户不存在'}), 404
-    #
-    #         update_sql = "UPDATE users SET username=:username, avatar=:avatar, email=:email"
-    #         params = {"username": username, "avatar": avatar, "id": user_id, "email": email}
-    #
-    #         if password:
-    #             update_sql += ", password=:password"
-    #             params["password"] = generate_password_hash(password)
-    #
-    #         if role_id:
-    #             # Update role string too
-    #             role_name = conn.execute(text("SELECT name FROM roles WHERE id=:id"), {"id": role_id}).scalar()
-    #             update_sql += ", role=:role, role_id=:role_id"
-    #             params["role"] = role_name
-    #             params["role_id"] = role_id
-    #
-    #         update_sql += " WHERE id=:id"
-    #
-    #         conn.execute(text(update_sql), params)
-    #         conn.commit()
-    #
-    #         return jsonify({'status': 0, 'msg': '更新成功'})
-    # except Exception as e:
-    #     return jsonify({'status': 1, 'msg': '更新失败', 'error': str(e)}), 500
 
-#duoduomsk修改漏洞后的代码，并加入了管理员层级
-# ⚠️ 核心修复：移除硬编码的 ROLE_LEVELS，直接绑定 username='admin' 为最高级
+# ------------------------------------------------------------
+# 更新用户信息（含权限校验）修复原有的UI回显漏洞
+# ------------------------------------------------------------
 @auth_bp.route('/api/users/<int:user_id>', methods=['PUT'])
 @token_required
 def update_user(current_user_id, user_id):
@@ -301,7 +322,6 @@ def update_user(current_user_id, user_id):
                     params["role_id"] = new_role_id
 
             # ⚠️ 核心修复：解决“前端假成功”的问题
-            # 如果没有字段需要更新，返回 status: 1，让前端 axios 拦截器去走错误分支，弹出 msg
             if not update_fields:
                 return jsonify({'status': 1, 'msg': '没有需要更新的内容，请检查是否输入了新密码或修改了角色'})
 
@@ -318,6 +338,10 @@ def update_user(current_user_id, user_id):
         print(f"================================")
         return jsonify({'status': 1, 'msg': '更新失败', 'error': str(e)})
 
+
+# ------------------------------------------------------------
+# 删除用户
+# ------------------------------------------------------------
 @auth_bp.route('/api/users/<int:user_id>', methods=['DELETE'])
 def delete_user(user_id):
     try:

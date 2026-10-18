@@ -34,7 +34,7 @@
 
 #duoduomsk
 #添加了实时监测会话是否有效的功能，这段要配合前端修改代码front/src/api/index.ts的handleNetworkError方法
-#原本项目的接口原因导致只能按f5刷新，当密码或用户状态更改时才能自动退出账号登录
+#不过由于原本项目的接口原因导致现在目前只能按f5刷新，当密码或用户状态更改时才能自动退出账号登录
 from functools import wraps
 from flask import request, jsonify, current_app
 import jwt
