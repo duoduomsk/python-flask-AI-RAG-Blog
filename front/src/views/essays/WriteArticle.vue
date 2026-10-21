@@ -159,33 +159,72 @@ const handleAiGenerate = async () => {
 
     aiGenerating.value = true
     try {
-        const res = await aiArticleService.generateArticle(aiTopic.value)
+        // 1. 投递任务给后端（点外卖）
         // @ts-ignore
-        const data = res.data || res
+        const res = await aiArticleService.generateArticle(aiTopic.value)
 
-        article.title = data.title || article.title
-        article.summary = data.summary || article.summary
+        // 注意：因为你写了 axios 拦截器（return data.data || data），
+        // 这里的 res 其实就是后端的 data 字段，即 { task_id: 'xxx' }
+        const taskId = res.task_id
 
-        if (data.category) article.category = data.category
-        if (data.tags && Array.isArray(data.tags)) article.tags = data.tags
-
-        if (quillEditor && data.content) {
-            const htmlContent = await marked.parse(data.content)
-            quillEditor.root.innerHTML = htmlContent
-            article.content = quillEditor.root.innerHTML
-            updateStatsFromEditor()
-            highlightEditorCode()
+        if (!taskId) {
+            throw new Error('未获取到任务 ID')
         }
 
-        message.success('AI 创作完成，已自动填充内容')
-        aiDialogVisible.value = false
+        message.success('AI 正在后台创作，请稍候...')
+
+        // 2. 开始轮询查询结果（每隔 2 秒问一次后厨）
+        let isFinished = false
+        const startTime = Date.now()
+        const TIMEOUT = 180000 // 3 分钟超时时间，防止无限死等
+
+        while (!isFinished) {
+            // 检查是否超时
+            if (Date.now() - startTime > TIMEOUT) {
+                throw new Error('生成超时，请重试')
+            }
+
+            // 等待 2 秒再查
+            await new Promise(resolve => setTimeout(resolve, 2000))
+
+            const statusRes = await aiArticleService.getTaskStatus(taskId)
+            const state = statusRes.state
+
+            if (state === 'SUCCESS') {
+                // 🎉 做好了！
+                isFinished = true
+                const data = statusRes.result
+
+                if (!data) throw new Error('生成结果为空')
+
+                // 填充数据
+                article.title = data.title || article.title
+                article.summary = data.summary || article.summary
+                if (data.category) article.category = data.category
+                if (data.tags && Array.isArray(data.tags)) article.tags = data.tags
+
+                if (quillEditor && data.content) {
+                    const htmlContent = await marked.parse(data.content)
+                    quillEditor.root.innerHTML = htmlContent
+                    article.content = quillEditor.root.innerHTML
+                    updateStatsFromEditor()
+                    highlightEditorCode()
+                }
+
+                message.success('AI 创作完成，已自动填充内容')
+                aiDialogVisible.value = false
+
+            } else if (state === 'FAILURE') {
+                // ❌ 任务失败
+                throw new Error(statusRes.msg || 'AI 生成失败')
+            }
+
+            // 如果是 PENDING 或 STARTED，就继续下一轮循环（什么都不做，继续等）
+        }
+
     } catch (error: any) {
         console.error('AI 生成失败', error)
-        if (error.message && error.message.includes('timeout')) {
-            message.error('AI 生成超时，请缩短主题描述后重试')
-        } else {
-            message.error('AI 生成失败，请检查 AI 配置后重试')
-        }
+        message.error(error.message || 'AI 生成失败，请检查 AI 配置后重试')
     } finally {
         aiGenerating.value = false
     }

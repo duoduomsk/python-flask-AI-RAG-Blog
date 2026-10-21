@@ -4,11 +4,11 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from routes.auth import auth_bp
-from routes.ai import ai_bp
-from routes.article import article_bp
-from routes.upload import upload_bp
-from routes.role import role_bp
+from backend.routes.auth import auth_bp
+from backend.routes.ai import ai_bp
+from backend.routes.article import article_bp
+from backend.routes.upload import upload_bp
+from backend.routes.role import role_bp
 
 from backend.config import SECRET_KEY
 from backend.limiter import limiter

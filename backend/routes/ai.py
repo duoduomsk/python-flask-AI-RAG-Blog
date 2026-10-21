@@ -12,6 +12,9 @@ from backend.cache import (
 )
 import json
 import re
+from backend.tasks.ai_tasks import generate_article_task
+from celery.result import AsyncResult
+from backend.celery_app import celery_app
 
 ai_bp = Blueprint('ai', __name__)
 
@@ -234,80 +237,45 @@ def chat_stream(current_user_id):
 
 
 # ============================================================
-# AI 生成文章（阶段 1 保持同步，阶段 2 再异步化）
+# AI 生成文章（加入了redis和celery）
 # ============================================================
 @ai_bp.route('/api/ai/generate-article', methods=['POST'])
 def generate_article():
     data = request.get_json()
     topic = data.get('topic')
-    print(f"Generating article for topic: {topic}")
 
     if not topic:
         return jsonify({'status': 1, 'msg': '请输入文章概要或主题'}), 400
 
-    active_config = get_active_ai_config()
-    if not active_config or not active_config.get('api_key'):
-        return jsonify({'status': 1, 'msg': 'AI服务未配置'}), 500
+    # 投递任务给 Celery（这就类似是点外卖）
+    task = generate_article_task.delay(topic)
 
-    api_key = active_config.get('api_key')
-    base_url = active_config.get('base_url')
-    model_name = active_config.get('model')
+    # 立刻返回 Task ID（这就是取餐号）
+    return jsonify({
+        'status': 0,
+        'msg': '任务已提交，正在后台生成中',
+        'data': {
+            'task_id': task.id
+        }
+    })
 
-    system_prompt = """
-    你是一个专业的文章创作者。请根据用户提供的主题或概要，创作一篇完整的文章。
 
-    ### 任务要求：
-    1. 文章内容必须丰富、充实，字数建议在 1000 字以上（如有必要可分章节）。
-    2. 使用 Markdown 语法编写 `content` 字段。
-    3. 严禁在 JSON 字符串外部包含任何解释性文字或 Markdown 代码块标记（如 ```json）。
+# 新增一个查询任务结果的接口
+@ai_bp.route('/api/ai/task-status/<task_id>', methods=['GET'])
+def get_task_status(task_id):
+    # 凭 Task ID 去 Redis 查进度
+    task_result = AsyncResult(task_id, app=celery_app)
 
-    ### 返回格式（必须是纯 JSON）：
-    {
-        "title": "文章标题",
-        "content": "文章正文内容（支持 Markdown 格式，内容要丰富充实）",
-        "summary": "文章摘要（100字以内）",
-        "category": "文章分类（从以下选项中选择一个：frontend, backend, database, algorithm, devops, architecture, ai, other）",
-        "tags": ["标签1", "标签2", "标签3"]
-    }
-    """
-    user_prompt = f"请直接输出符合格式的 JSON 字符串，文章主题关于：{topic}"
+    if task_result.state == 'PENDING':
+        response = {'state': task_result.state, 'msg': '任务排队中或正在执行'}
+    elif task_result.state == 'SUCCESS':
+        response = {'state': task_result.state, 'result': task_result.result}
+    elif task_result.state == 'FAILURE':
+        response = {'state': task_result.state, 'msg': '生成失败，请重试'}
+    else:
+        response = {'state': task_result.state, 'msg': '其他状态'}
 
-    try:
-        client = OpenAI(base_url=base_url, api_key=api_key)
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            stream=False,
-            temperature=0.7,
-            max_tokens=2500,
-        )
-        content = response.choices[0].message.content
-
-        try:
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-            if json_match:
-                content = json_match.group(0)
-            article_data = json.loads(content.strip(), strict=False)
-            return jsonify({'status': 0, 'msg': '生成成功', 'data': article_data})
-        except Exception as json_err:
-            print(f"JSON parse failed: {str(json_err)}, returning raw content")
-            return jsonify({
-                'status': 0,
-                'msg': '生成成功（非标准格式）',
-                'data': {
-                    "title": topic[:20],
-                    "content": content,
-                    "summary": content[:150].replace('\n', ' ') + '...',
-                    "category": "other",
-                    "tags": ["AI生成"]
-                }
-            })
-    except Exception as e:
-        print(f"AI generation failed: {str(e)}")
-        return jsonify({'status': 1, 'msg': f'生成失败: {str(e)}'}), 500
+    return jsonify({'status': 0, 'data': response})
 
 
 # ============================================================

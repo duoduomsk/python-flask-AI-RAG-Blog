@@ -129,22 +129,36 @@ export const aiChatService = {
 }
 
 /**
- * AI 摘要服务
+ * AI 文章生成服务
  */
 export const aiArticleService = {
     /**
-     * 生成文章
+     * 生成文章（提交任务）
      * @param topic 文章主题或概要
-     * @returns 文章内容
+     * @returns 任务ID
      */
     generateArticle: (topic: string) => {
-        return request.post<{
-            title: string
-            content: string
-            summary: string
-            category: string
-            tags: string[]
-        }>('/ai/generate-article', { topic })
+        // 后端现在立刻返回 { task_id: string }
+        return request.post<{ task_id: string }>('/ai/generate-article', { topic })
+    },
+
+    /**
+     * 查询任务状态
+     * @param taskId 任务ID
+     * @returns 任务状态和结果
+     */
+    getTaskStatus: (taskId: string) => {
+        return request.get<{
+            state: 'PENDING' | 'STARTED' | 'SUCCESS' | 'FAILURE';
+            result?: {
+                title: string;
+                content: string;
+                summary: string;
+                category: string;
+                tags: string[];
+            };
+            msg?: string;
+        }>(`/ai/task-status/${taskId}`)
     }
 }
 
