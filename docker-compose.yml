@@ -1,0 +1,93 @@
+services:
+  # 1. 数据库
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # 自动执行你本地的建表脚本，如果有的话 (你需要确保有这个文件夹)
+      #- ./backend/create_tables.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. 缓存与队列
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # 3. Flask 后端接口
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - SECRET_KEY=${SECRET_KEY}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - "5000:5000"
+
+  # 4. Celery 后厨大厨 (复用 backend 的代码)
+  celery-worker:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    command: celery -A backend.celery_app.celery_app worker -l info
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - backend
+      - redis
+
+  # 5. Celery 定时闹钟 (复用 backend 的代码)
+  celery-beat:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    command: celery -A backend.celery_app.celery_app beat -l info
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - backend
+      - redis
+
+  # 6. 前台页面
+  front:
+    build:
+      context: .
+      dockerfile: docker/front/Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+  # 7. 管理端页面
+  avue:
+    build:
+      context: .
+      dockerfile: docker/avue/Dockerfile
+    ports:
+      - "81:80"
+    depends_on:
+      - backend
+
+volumes:
+  mysql_data:
+  redis_data:
