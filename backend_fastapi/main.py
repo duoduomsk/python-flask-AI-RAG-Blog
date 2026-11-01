@@ -8,7 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from limiter import limiter, rate_limit_handler
 from slowapi.errors import RateLimitExceeded
-
+from sqlalchemy import text
 from config import (
     ALLOWED_ORIGINS,
     ALLOWED_ORIGIN_REGEX,
@@ -51,13 +51,37 @@ def root():
 
 @app.get("/health", tags=["系统"])
 def health():
-    from cache import cache_stats
-    return {
-        "status": "ok",
-        "service": "ai-blog-fastapi",
-        "version": app.version,
-        "cache": cache_stats(),
-    }
+    from cache import _get_redis
+    from database import engine
+
+    checks = {"db": "unknown", "redis": "unknown"}
+
+    # DB 探针：真跑一次 SELECT 1
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        checks["db"] = "ok"
+    except Exception as e:
+        checks["db"] = f"error: {e}"
+
+    # Redis 探针：真跑一次 PING
+    try:
+        r = _get_redis()
+        checks["redis"] = "ok" if r and r.ping() else "no-pong"
+    except Exception as e:
+        checks["redis"] = f"error: {e}"
+
+    # 只有 DB 挂了才返回 503（Redis 挂了有内存回退，业务还能跑）
+    healthy = checks["db"] == "ok"
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": 0 if healthy else 1,
+            "service": "ai-blog-fastapi",
+            "version": app.version,
+            "checks": checks,
+        },
+    )
 
 
 # ------------------------------------------------------------------

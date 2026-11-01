@@ -64,6 +64,8 @@ RATELIMIT_ENABLED = os.getenv("RATELIMIT_ENABLED", "true").lower() == "true"
 # ------------------------------------------------------------------
 CACHE_TTL_LIST = int(os.getenv("CACHE_TTL_LIST", "60"))
 CACHE_TTL_DETAIL = int(os.getenv("CACHE_TTL_DETAIL", "300"))
+CACHE_TTL_CONFIG = int(os.getenv("CACHE_TTL_CONFIG", "30"))      # ← 新增：AI 配置列表缓存
+CACHE_TTL_STATIC = int(os.getenv("CACHE_TTL_STATIC", "3600"))    # ← 新增：静态资源
 REDIS_CONTEXT_TTL = int(os.getenv("REDIS_CONTEXT_TTL", "86400"))
 
 
