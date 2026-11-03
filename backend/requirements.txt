@@ -20,3 +20,4 @@ gunicorn
 flask-limiter>=4.1.0
 redis>=8.1.0
 celery
+qdrant-client>=1.12.0

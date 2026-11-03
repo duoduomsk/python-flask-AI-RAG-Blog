@@ -46,19 +46,45 @@
                             <div v-else class="message-text markdown-content" v-html="renderMarkdown(item.content)"></div>
                             <button v-if="item.content" class="copy-btn" type="button" @click="copyMessage(item.content)">复制</button>
                         </div>
-                    </div>
+
+                        <!-- 新增：参考来源卡片 -->
+                        <div v-if="item.role === 'ai' && item.references && item.references.length > 0" class="references-container">
+                            <div class="references-title">📚 参考了以下博客内容：</div>
+                            <div class="references-list">
+                                <a v-for="ref in item.references" :key="ref.index"
+                                   :href="`/essays/${ref.article_id}`" target="_blank" class="reference-card">
+                                    <div class="ref-index">[{{ ref.index }}]</div>
+                                    <div class="ref-info">
+                                        <div class="ref-title">{{ ref.title }}</div>
+                                        <div class="ref-heading" v-if="ref.heading">{{ ref.heading }}</div>
+                                    </div>
+                                    <div class="ref-score">{{ (ref.score * 100).toFixed(0) }}%</div>
+                                </a>
+                            </div>
+                        </div>
+                    </div> <!-- message-content 结束 -->
                 </article>
             </section>
 
-            <footer class="chat-input-area">
-                <textarea v-model="inputMessage" placeholder="输入你的问题或创作需求..." rows="2"
-                    @keydown.enter.prevent="sendMessage" @keydown.enter.shift.exact="inputMessage += '\n'"
-                    :disabled="isLoading" class="message-input"></textarea>
-                <div class="input-actions">
-                    <button class="control-btn" type="button" @click="inputMessage = ''" v-if="inputMessage.trim()">清空输入</button>
-                    <button class="send-btn" type="button" @click="sendMessage" :disabled="!inputMessage.trim() || isLoading">
-                        {{ isLoading ? '...' : '发送' }}
-                    </button>
+            <footer class="chat-input-area" style="display: flex; flex-direction: column;">
+                <!-- 新增：知识库开关 -->
+                <div class="rag-toggle-row" style="display: flex; align-items: center; margin-bottom: 8px; font-size: 14px; color: var(--text-secondary);">
+                    <label style="display: flex; align-items: center; cursor: pointer; gap: 6px;">
+                        <input type="checkbox" v-model="useRag" style="width: 16px; height: 16px; accent-color: var(--button-bg);" />
+                        📚 基于博客历史文章回答
+                    </label>
+                </div>
+
+                <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; width: 100%;">
+                    <textarea v-model="inputMessage" placeholder="输入你的问题或创作需求..." rows="2"
+                        @keydown.enter.prevent="sendMessage" @keydown.enter.shift.exact="inputMessage += '\n'"
+                        :disabled="isLoading" class="message-input"></textarea>
+                    <div class="input-actions">
+                        <button class="control-btn" type="button" @click="inputMessage = ''" v-if="inputMessage.trim()">清空输入</button>
+                        <button class="send-btn" type="button" @click="sendMessage" :disabled="!inputMessage.trim() || isLoading">
+                            {{ isLoading ? '...' : '发送' }}
+                        </button>
+                    </div>
                 </div>
             </footer>
         </main>
@@ -70,6 +96,7 @@ import { ref, nextTick, onMounted } from 'vue'
 import { useElMessage } from '@/hooks/useMessage'
 import { aiChatService } from '@/api/modules/ai'
 import { marked } from 'marked'
+import type { ReferenceItem } from '@/api/modules/ai/interface'
 
 const { message } = useElMessage()
 
@@ -82,7 +109,10 @@ interface Message {
     role: 'user' | 'ai'
     content: string
     timestamp: Date
+    references?: ReferenceItem[] // <--- 新增
 }
+
+const useRag = ref(true) // 默认开启
 
 const STORAGE_KEY = 'aiChatMessages'
 
@@ -127,8 +157,12 @@ async function sendMessage() {
         message: content,
         user_id: '123',
         model_provider: 'qwen',      // 新增，可以改为你的
-        model_name: 'qwen-max'       // 新增
+        model_name: 'qwen-max',       // 新增
+        use_rag: useRag.value // <--- 新增传参
         }, {
+            onReferences: (refs) => { // <--- 新增监听
+                messages.value[aiMessageIndex].references = refs
+            },
             onDelta: async (delta) => {
                 messages.value[aiMessageIndex].content += delta
                 saveMessagesToStorage(messages.value)
@@ -530,6 +564,79 @@ onMounted(() => {
     color: var(--button-fg);
     background: var(--button-bg);
     box-shadow: var(--ring);
+}
+
+/* 参考来源卡片样式 */
+.references-container {
+    margin-top: 12px;
+    padding: 12px;
+    border-radius: 10px;
+    background: var(--surface-subtle);
+    box-shadow: var(--ring);
+}
+
+.references-title {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.references-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.reference-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: var(--surface);
+    text-decoration: none;
+    color: var(--text-primary);
+    transition: background 180ms ease;
+    box-shadow: var(--ring);
+}
+
+.reference-card:hover {
+    background: var(--surface-hover);
+}
+
+.ref-index {
+    font-family: var(--font-mono);
+    color: var(--button-bg);
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.ref-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.ref-title {
+    font-size: 14px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ref-heading {
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ref-score {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: #10b981;
+    font-weight: 600;
 }
 
 .send-btn:disabled {

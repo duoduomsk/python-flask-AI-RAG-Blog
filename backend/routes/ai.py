@@ -15,6 +15,8 @@ import re
 from backend.tasks.ai_tasks import generate_article_task
 from celery.result import AsyncResult
 from backend.celery_app import celery_app
+from backend.rag.retriever import retrieve
+from backend.config import RAG_ENABLED, EMBEDDING_API_KEY
 
 ai_bp = Blueprint('ai', __name__)
 
@@ -37,6 +39,13 @@ SUPPORTED_MODELS = {
         'models': ['deepseek-chat']
     }
 }
+
+RAG_SYSTEM_PROMPT = """你是博客的 AI 助手。请优先基于【参考资料】回答用户问题。
+规则：
+1. 只使用参考资料中的信息回答，禁止编造资料中不存在的内容；
+2. 引用处用 [1][2] 标注来源编号；
+3. 若参考资料不足以回答，明确告知"博客中暂无相关内容"，然后才可用通用知识补充并声明"以下为通用知识"；
+4. 保持简洁，使用 Markdown。"""
 
 def get_active_ai_config():
     """读取当前启用的 AI 配置，缺省回落到环境变量。"""
@@ -64,12 +73,14 @@ def get_active_ai_config():
 def format_sse_event(payload):
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-def _build_messages(user_id, system_prompt, user_message):
-    """
-    组装本次请求的完整 messages：
-      [system] + 会话历史（不含 system） + 本次 user 消息
-    会话历史来自 Redis，不再依赖进程内字典。
-    """
+def _build_messages(user_id, system_prompt, user_message, rag_chunks=None):
+    if rag_chunks:
+        refs = "\n\n".join(
+            f"[{i + 1}]（来自《{c['title']}》{c['heading_path']}）\n{c['text']}"
+            for i, c in enumerate(rag_chunks)
+        )
+        system_prompt = f"{RAG_SYSTEM_PROMPT}\n\n【参考资料】\n{refs}"
+
     messages = [{"role": "system", "content": system_prompt or "You are a helpful assistant."}]
     messages.extend(get_ai_context(user_id))
     messages.append({"role": "user", "content": user_message})
@@ -84,6 +95,7 @@ def chat(current_user_id):
     data = request.get_json() or {}
     user_id = current_user_id          # 核心修复：只信 token
     message = data.get('message')
+    use_rag = data.get('use_rag', False) and RAG_ENABLED and bool(EMBEDDING_API_KEY)
     reset_context = data.get('reset_context', False)
     active_config = get_active_ai_config()
 
@@ -111,7 +123,12 @@ def chat(current_user_id):
     if not api_key:
         return jsonify({'status': 1, 'msg': '未配置有效的 API Key，请联系管理员配置 AI'}), 400
 
-    messages = _build_messages(user_id, system_prompt, message)
+    rag_chunks = retrieve(message) if use_rag else []
+    # 提取由于参考资料需要的 max_tokens 变大
+    if use_rag and max_tokens < 1500:
+        max_tokens = 1500
+
+    messages = _build_messages(user_id, system_prompt, message, rag_chunks)
 
     try:
         client = OpenAI(base_url=base_url, api_key=api_key)
@@ -153,6 +170,7 @@ def chat_stream(current_user_id):
     data = request.get_json() or {}
     user_id = current_user_id
     message = data.get('message')
+    use_rag = data.get('use_rag', False) and RAG_ENABLED and bool(EMBEDDING_API_KEY)
     reset_context = data.get('reset_context', False)
     active_config = get_active_ai_config()
 
@@ -186,8 +204,18 @@ def chat_stream(current_user_id):
             yield format_sse_event({'type': 'error', 'message': '未配置有效的 API Key，请联系管理员配置 AI'})
             return
 
-        messages = _build_messages(user_id, system_prompt, message)
+        # 1. 检索
+        rag_chunks = retrieve(message) if use_rag else []
+        references = [
+            {"index": i + 1, "article_id": c["article_id"], "title": c["title"],
+             "score": round(c["score"], 3), "heading": c["heading_path"]}
+            for i, c in enumerate(rag_chunks)
+        ]
+
+        # 2. 拼装
+        messages = _build_messages(user_id, system_prompt, message, rag_chunks)
         assistant_reply = ''
+        actual_max_tokens = 1500 if use_rag else max_tokens
 
         try:
             client = OpenAI(base_url=base_url, api_key=api_key)
@@ -198,12 +226,16 @@ def chat_stream(current_user_id):
                 'provider_used': model_provider,
             })
 
+            # 推送参考资料给前端
+            if use_rag:
+                yield format_sse_event({'type': 'references', 'references': references})
+
             response = client.chat.completions.create(
                 model=model_name,
                 messages=messages,
                 stream=True,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=actual_max_tokens,
             )
 
             for chunk in response:

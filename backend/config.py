@@ -56,6 +56,25 @@ CACHE_TTL_CONFIG = int(os.getenv("CACHE_TTL_CONFIG", "30"))
 CACHE_TTL_STATIC = int(os.getenv("CACHE_TTL_STATIC", "3600"))
 REDIS_CONTEXT_TTL = int(os.getenv("REDIS_CONTEXT_TTL", "86400"))
 
+# ---------- RAG ----------
+QDRANT_URL        = os.getenv("QDRANT_URL", "http://127.0.0.1:6333")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "blog_articles")
+
+EMBEDDING_BASE_URL = os.getenv(
+    "EMBEDDING_BASE_URL",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
+EMBEDDING_API_KEY  = os.getenv("DASHSCOPE_API_KEY", "")
+# 请换成你的，这个已经失效
+EMBEDDING_MODEL    = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
+EMBEDDING_DIM      = int(os.getenv("EMBEDDING_DIM", "1024"))
+
+RAG_CHUNK_SIZE      = int(os.getenv("RAG_CHUNK_SIZE", "500"))
+RAG_CHUNK_OVERLAP   = int(os.getenv("RAG_CHUNK_OVERLAP", "80"))
+RAG_TOP_K           = int(os.getenv("RAG_TOP_K", "5"))
+RAG_SCORE_THRESHOLD = float(os.getenv("RAG_SCORE_THRESHOLD", "0.35"))
+RAG_ENABLED         = os.getenv("RAG_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+
 
 # ---------- 限流总开关 ----------
 RATELIMIT_ENABLED = os.getenv("RATELIMIT_ENABLED", "true").lower() in (

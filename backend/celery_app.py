@@ -7,7 +7,11 @@ celery_app = Celery(
     'blog_tasks',
     broker=CELERY_BROKER_URL,
     backend=CELERY_RESULT_BACKEND,
-    include=['backend.tasks.ai_tasks', 'backend.tasks.cleanup_tasks'] # 告诉它去哪找任务
+    include=[
+        'backend.tasks.ai_tasks',
+        'backend.tasks.cleanup_tasks',
+        'backend.tasks.rag_tasks',
+    ],
 )
 
 # 配置
@@ -27,5 +31,10 @@ celery_app.conf.beat_schedule = {
     'flush-views-every-2-minutes': {
         'task': 'backend.tasks.cleanup_tasks.flush_views',
         'schedule': 120.0,  # 每 120 秒执行一次
+    },
+    # 新增：每 30 分钟对账一次 RAG 索引
+    'sync-rag-index-every-30-minutes': {
+        'task': 'backend.tasks.rag_tasks.sync_check',
+        'schedule': 1800.0, # 30 * 60 = 1800 秒
     },
 }

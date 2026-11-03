@@ -17,6 +17,12 @@ function dispatchStreamPayload(payload: AIStreamPayload, handlers: AIStreamHandl
         return
     }
 
+    // <--- 新增
+    if (payload.type === 'references') {
+        handlers.onReferences?.(payload.references || [], payload)
+        return
+    }
+
     if (payload.type === 'delta') {
         handlers.onDelta?.(payload.content || '', payload)
         return

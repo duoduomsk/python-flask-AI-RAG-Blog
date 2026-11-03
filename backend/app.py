@@ -9,6 +9,7 @@ from backend.routes.ai import ai_bp
 from backend.routes.article import article_bp
 from backend.routes.upload import upload_bp
 from backend.routes.role import role_bp
+from backend.routes.rag import rag_bp
 
 from backend.config import SECRET_KEY
 from backend.limiter import limiter
@@ -99,6 +100,7 @@ app.register_blueprint(ai_bp)
 app.register_blueprint(article_bp)
 app.register_blueprint(upload_bp)
 app.register_blueprint(role_bp)
+app.register_blueprint(rag_bp)
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))

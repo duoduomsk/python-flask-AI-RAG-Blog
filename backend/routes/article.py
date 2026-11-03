@@ -10,6 +10,7 @@ from backend.cache import (
     incr_view, get_view_delta
 )
 from backend.config import CACHE_TTL_LIST
+from backend.tasks.rag_tasks import index_article_task, delete_article_task
 
 article_bp = Blueprint('article', __name__)
 
@@ -64,6 +65,12 @@ def create_article(current_user_id):
 
         # 失效列表缓存
         invalidate_prefix(make_key("article", "list"))
+
+        # RAG 索引钩子（异步投递，不阻塞 HTTP）
+        try:
+            index_article_task.delay(article_id)
+        except Exception as e:
+            print(f"[RAG] 投递索引任务失败 aid={article_id}: {e}")
 
         return jsonify({
             'status': 0,
@@ -132,6 +139,9 @@ def update_article(current_user_id, article_id):
             if article.author_id != current_user_id and not is_admin:
                 return jsonify({'status': 1, 'msg': '无权修改此文章'}), 403
 
+            # 新增：记录原状态，方便后面判断
+            old_status = article.status
+
             # Construct update SQL dynamically based on provided fields
             update_parts = []
             params = {"id": article_id}
@@ -168,6 +178,20 @@ def update_article(current_user_id, article_id):
 
         # 失效列表缓存
         invalidate_prefix(make_key("article", "list"))
+
+        # 新增：如果状态从 published 变成了其他（草稿/下架），直接删索引
+        if status is not None and status != 'published' and old_status == 'published':
+            try:
+                delete_article_task.delay(article_id)
+            except Exception as e:
+                print(f"[RAG] 投递删除索引任务失败 aid={article_id}: {e}")
+        else:
+            # 正常更新或重新上架，重新建索引
+            try:
+                index_article_task.delay(article_id)
+            except Exception as e:
+                print(f"[RAG] 投递索引任务失败 aid={article_id}: {e}")
+
         return jsonify({'status': 0, 'msg': '文章更新成功'})
 
     except Exception as e:
@@ -480,6 +504,12 @@ def delete_article(current_user_id, article_id):
         # 失效列表和评论缓存
         invalidate_prefix(make_key("article", "list"))
         invalidate_prefix(make_key("article", "comments", "v1", article_id))
+
+        try:
+            delete_article_task.delay(article_id)
+        except Exception as e:
+            print(f"[RAG] 投递删除索引任务失败 aid={article_id}: {e}")
+
         return jsonify({'status': 0, 'msg': '删除成功'})
     except Exception as e:
         return jsonify({'status': 1, 'msg': '删除失败', 'error': str(e)}), 500

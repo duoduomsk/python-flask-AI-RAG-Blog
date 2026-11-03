@@ -147,6 +147,20 @@ def init_db():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """))
 
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS rag_documents (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                article_id INT NOT NULL UNIQUE,
+                content_hash CHAR(32),
+                chunk_count INT DEFAULT 0,
+                status VARCHAR(20) DEFAULT 'pending',
+                error_msg VARCHAR(500),
+                indexed_at TIMESTAMP NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """))
+
         for role_name, description in [
             ("admin", "系统管理员"),
             ("user", "普通用户"),

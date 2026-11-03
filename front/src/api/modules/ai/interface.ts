@@ -14,6 +14,7 @@ export interface AIChatRequest {
     temperature?: number
     model_provider?: string
     model_name?: string
+    use_rag?: boolean // <--- 新增
 }
 
 // AI 聊天响应数据接口
@@ -33,12 +34,13 @@ export interface AIChatResponse {
 }
 
 export interface AIStreamPayload {
-    type: 'start' | 'delta' | 'done' | 'error'
+    type: 'start' | 'delta' | 'done' | 'error' | 'references' // <--- 新增 references
     content?: string
     message?: string
     context_length?: number
     model_used?: string
     provider_used?: string
+    references?: ReferenceItem[] // <--- 新增
 }
 
 export interface AIStreamHandlers {
@@ -46,6 +48,7 @@ export interface AIStreamHandlers {
     onDelta?: (content: string, payload: AIStreamPayload) => void
     onDone?: (payload: AIStreamPayload) => void
     onError?: (message: string, payload?: AIStreamPayload) => void
+    onReferences?: (references: ReferenceItem[], payload: AIStreamPayload) => void // <--- 新增
 }
 
 // AI 上下文响应数据接口
@@ -100,4 +103,12 @@ export interface AISummaryResponse {
     msg: string
     data?: AISummaryResponseData
     error?: string
+}
+
+export interface ReferenceItem {
+    index: number
+    article_id: number
+    title: string
+    score: number
+    heading: string
 }

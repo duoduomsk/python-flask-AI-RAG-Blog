@@ -7,8 +7,8 @@ upload_bp = Blueprint('upload', __name__)
 
 # 配置上传文件夹
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+# 加上 exist_ok=True，即使目录已经存在也不会报错，完美解决并发创建的问题
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'svg'}
 
