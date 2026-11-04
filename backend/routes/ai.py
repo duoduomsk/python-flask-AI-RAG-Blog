@@ -73,6 +73,43 @@ def get_active_ai_config():
 def format_sse_event(payload):
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+#非常重要，rag代词指代解决
+def rewrite_query_with_history(user_id, message, api_key, base_url, model_name):
+    """结合历史记录，将用户的最新追问改写为独立完整的检索句"""
+    history = get_ai_context(user_id)
+    if not history:
+        return message  # 没有历史，直接返回原句
+
+    # 只取最近 4 条历史（2轮对话），太长没必要还费 token
+    recent_history = history[-4:]
+    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent_history])
+
+    prompt = f"""下面是一段对话历史：
+{history_text}
+
+用户的最新问题是：{message}
+
+请结合对话历史，将用户的最新问题改写为一个独立、完整、适合用于搜索引擎检索的句子。
+要求：
+1. 补全代词（如“它”、“这个”）指代的具体事物。
+2. 直接输出改写后的句子，绝对不要包含任何解释、前缀或标点修饰。"""
+
+    try:
+        client = OpenAI(base_url=base_url, api_key=api_key)
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+            stream=False,
+            temperature=0.1,
+            max_tokens=100,
+        )
+        rewritten = response.choices[0].message.content.strip()
+        print(f"[RAG 改写] 原句: {message} -> 改写句: {rewritten}")
+        return rewritten
+    except Exception as e:
+        print(f"[RAG 改写失败] {e}")
+        return message  # 失败就降级用原句，不影响主流程
+
 def _build_messages(user_id, system_prompt, user_message, rag_chunks=None):
     if rag_chunks:
         refs = "\n\n".join(
@@ -168,7 +205,10 @@ def chat(current_user_id):
 @token_required
 def chat_stream(current_user_id):
     data = request.get_json() or {}
+
     user_id = current_user_id
+    # 新增接收 pack_id
+    pack_id = data.get('pack_id')
     message = data.get('message')
     use_rag = data.get('use_rag', False) and RAG_ENABLED and bool(EMBEDDING_API_KEY)
     reset_context = data.get('reset_context', False)
@@ -204,8 +244,23 @@ def chat_stream(current_user_id):
             yield format_sse_event({'type': 'error', 'message': '未配置有效的 API Key，请联系管理员配置 AI'})
             return
 
-        # 1. 检索
-        rag_chunks = retrieve(message) if use_rag else []
+        # 1. 如果有 RAG，先进行多轮问题改写
+        search_query = message
+        if use_rag:
+            search_query = rewrite_query_with_history(user_id, message, api_key, base_url, model_name)
+
+        # 2. 使用改写后的句子去检索
+        article_ids = None
+        if pack_id:
+            with engine.connect() as conn:
+                rows = conn.execute(text("SELECT document_id FROM context_pack_documents WHERE pack_id = :pid"), {"pid": pack_id}).scalars().all()
+                article_ids = list(rows)
+                if not article_ids:
+                    article_ids = [-1] # 如果包是空的，给个不存在的 ID，确保检索结果为空
+
+        # 传给 retrieve
+        rag_chunks = retrieve(search_query, article_ids=article_ids) if use_rag else []
+
         references = [
             {"index": i + 1, "article_id": c["article_id"], "title": c["title"],
              "score": round(c["score"], 3), "heading": c["heading_path"]}

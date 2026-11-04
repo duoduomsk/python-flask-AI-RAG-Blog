@@ -15,6 +15,7 @@ export interface AIChatRequest {
     model_provider?: string
     model_name?: string
     use_rag?: boolean // <--- 新增
+    pack_id?: number | null // <--- 新增
 }
 
 // AI 聊天响应数据接口

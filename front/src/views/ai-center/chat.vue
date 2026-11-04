@@ -67,12 +67,24 @@
             </section>
 
             <footer class="chat-input-area" style="display: flex; flex-direction: column;">
-                <!-- 新增：知识库开关 -->
+                <!-- 知识库开关 + 上下文包下拉框 -->
                 <div class="rag-toggle-row" style="display: flex; align-items: center; margin-bottom: 8px; font-size: 14px; color: var(--text-secondary);">
                     <label style="display: flex; align-items: center; cursor: pointer; gap: 6px;">
                         <input type="checkbox" v-model="useRag" style="width: 16px; height: 16px; accent-color: var(--button-bg);" />
                         📚 基于博客历史文章回答
                     </label>
+
+                    <!-- 新增：上下文包选择下拉框 -->
+                    <select
+                        v-if="useRag"
+                        v-model="selectedPackId"
+                        style="margin-left: 20px; padding: 4px 8px; border-radius: 6px; border: 1px solid #ddd; background: var(--surface-subtle); color: var(--text-primary); outline: none; cursor: pointer;"
+                    >
+                        <option :value="null">全部文章库</option>
+                        <option v-for="pack in packList" :key="pack.id" :value="pack.id">
+                            {{ pack.name }}
+                        </option>
+                    </select>
                 </div>
 
                 <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; width: 100%;">
@@ -97,6 +109,7 @@ import { useElMessage } from '@/hooks/useMessage'
 import { aiChatService } from '@/api/modules/ai'
 import { marked } from 'marked'
 import type { ReferenceItem } from '@/api/modules/ai/interface'
+import { useGlobalStore } from '@/store'
 
 const { message } = useElMessage()
 
@@ -112,7 +125,28 @@ interface Message {
     references?: ReferenceItem[] // <--- 新增
 }
 
-const useRag = ref(true) // 默认开启
+const useRag = ref(true) //默认开启
+const selectedPackId = ref<number | null>(null) // 选中的包 ID，默认 null (全部)
+const packList = ref<{ id: number; name: string }[]>([]) // 存放包列表
+
+const globalStore = useGlobalStore()
+
+// 获取上下文包列表
+async function loadContextPacks() {
+    try {
+        const response = await fetch('/api/context-packs', {
+            headers: {
+                  'Authorization': globalStore.token ? `Bearer ${globalStore.token}` : ''
+            }
+        })
+        const res = await response.json()
+        if (res.status === 0) {
+            packList.value = res.data
+        }
+    } catch (error) {
+        console.error('获取上下文包列表失败:', error)
+    }
+}
 
 const STORAGE_KEY = 'aiChatMessages'
 
@@ -158,7 +192,8 @@ async function sendMessage() {
         user_id: '123',
         model_provider: 'qwen',      // 新增，可以改为你的
         model_name: 'qwen-max',       // 新增
-        use_rag: useRag.value // <--- 新增传参
+        use_rag: useRag.value , // <--- 新增传参
+        pack_id: selectedPackId.value // <--- 新增
         }, {
             onReferences: (refs) => { // <--- 新增监听
                 messages.value[aiMessageIndex].references = refs
@@ -241,6 +276,7 @@ function copyMessage(content: string) {
 
 onMounted(() => {
     messages.value = loadMessagesFromStorage()
+    loadContextPacks() // <--- 新增
 })
 </script>
 

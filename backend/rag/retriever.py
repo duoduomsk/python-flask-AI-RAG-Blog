@@ -1,7 +1,7 @@
 # backend/rag/retriever.py
 import logging
 
-from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue, MatchAny # 引入 MatchAny
 
 from backend.config import QDRANT_COLLECTION, RAG_TOP_K, RAG_SCORE_THRESHOLD
 from backend.rag.vector_store import get_qdrant, ensure_collection
@@ -11,7 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 def retrieve(query: str, top_k: int | None = None,
-             category: str | None = None) -> list[dict]:
+             category: str | None = None,
+             article_ids: list[int] | None = None) -> list[dict]:
     """检索 top_k 片段。Qdrant 挂掉 → 返回 []（fail-open）。"""
     if not query or not query.strip():
         return []
@@ -27,6 +28,11 @@ def retrieve(query: str, top_k: int | None = None,
         must = []
         if category:
             must.append(FieldCondition(key="category", match=MatchValue(value=category)))
+
+        # 新增：如果传了特定的文章 ID 列表，只在里面搜
+        if article_ids:
+            must.append(FieldCondition(key="article_id", match=MatchAny(any=article_ids)))
+
         flt = Filter(must=must) if must else None
 
         resp = client.query_points(
