@@ -49,6 +49,8 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - QDRANT_URL=${QDRANT_URL}
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - HF_ENDPOINT=https://hf-mirror.com
+      - RATELIMIT_ENABLED=false
     depends_on:
       mysql:
         condition: service_healthy
@@ -70,6 +72,8 @@ services:
       - REDIS_URL=${REDIS_URL}
       - QDRANT_URL=${QDRANT_URL}
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - HF_ENDPOINT=https://hf-mirror.com
+      - RATELIMIT_ENABLED=false
     depends_on:
       backend:
         condition: service_started

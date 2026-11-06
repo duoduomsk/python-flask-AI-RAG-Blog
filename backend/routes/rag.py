@@ -1,12 +1,11 @@
 # backend/routes/rag.py
 from flask import Blueprint, request, jsonify
 from sqlalchemy import text
-
 from backend.database import engine
 from backend.middleware import token_required
 from backend.limiter import limiter
 from backend.tasks.rag_tasks import rebuild_index_task, delete_article_task
-from backend.rag.retriever import retrieve
+from backend.rag.retriever import retrieve, retrieve_debug
 
 rag_bp = Blueprint('rag', __name__)
 
@@ -85,3 +84,15 @@ def delete_doc(current_user_id, article_id):
             return jsonify({'status': 1, 'msg': '权限不足'}), 403
     delete_article_task.delay(article_id)
     return jsonify({'status': 0, 'msg': '已提交删除索引任务'})
+
+@rag_bp.route('/api/rag/search-debug', methods=['GET'])
+@token_required
+def search_debug(current_user_id):
+    q = (request.args.get('q') or '').strip()
+    if not q:
+        return jsonify({'status': 1, 'msg': '缺少 q 参数'}), 400
+    try:
+        data = retrieve_debug(q)
+        return jsonify({'status': 0, 'data': data})
+    except Exception as e:
+        return jsonify({'status': 1, 'msg': str(e)}), 500

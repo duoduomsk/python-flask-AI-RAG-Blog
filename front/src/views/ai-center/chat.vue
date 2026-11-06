@@ -33,9 +33,22 @@
                 <article v-for="(item, index) in messages" :key="index" class="chat-message" :class="item.role">
                     <div class="message-avatar">{{ item.role === 'user' ? 'U' : 'AI' }}</div>
                     <div class="message-content">
-                        <div class="message-meta">
+                                                <div class="message-meta">
                             <span>{{ item.role === 'user' ? '作者' : 'AI 助手' }}</span>
                             <time>{{ formatTime(item.timestamp) }}</time>
+
+                            <!-- 新增：意图与情绪标签 -->
+                            <span v-if="item.role === 'ai' && item.analysis" class="analysis-tags">
+                                <span class="tag tag-intent">
+                                    🎯 {{ intentMap[item.analysis.intent] || item.analysis.intent }}
+                                </span>
+                                <span class="tag tag-emotion" v-if="item.analysis.emotion && item.analysis.emotion !== 'neutral'">
+                                    💡 {{ emotionMap[item.analysis.emotion] || item.analysis.emotion }}
+                                </span>
+                                <span class="tag tag-no-rag" v-if="!item.analysis.need_rag">
+                                    💬 未使用知识库
+                                </span>
+                            </span>
                         </div>
                         <div class="message-bubble">
                             <div v-if="item.role === 'user'" class="message-text">{{ item.content }}</div>
@@ -108,7 +121,7 @@ import { ref, nextTick, onMounted } from 'vue'
 import { useElMessage } from '@/hooks/useMessage'
 import { aiChatService } from '@/api/modules/ai'
 import { marked } from 'marked'
-import type { ReferenceItem } from '@/api/modules/ai/interface'
+import type { ReferenceItem, AIAnalysis } from '@/api/modules/ai/interface'
 import { useGlobalStore } from '@/store'
 
 const { message } = useElMessage()
@@ -123,6 +136,29 @@ interface Message {
     content: string
     timestamp: Date
     references?: ReferenceItem[] // <--- 新增
+    analysis?: AIAnalysis // 新增
+}
+
+// 新增：意图和情绪的中文映射字典
+const intentMap: Record<string, string> = {
+    'knowledge_qa': '知识问答',
+    'troubleshooting': '排错求助',
+    'article_recommend': '文章推荐',
+    'writing_assist': '创作辅助',
+    'summarize': '内容摘要',
+    'navigation': '站点导航',
+    'chitchat': '闲聊',
+    'out_of_scope': '超纲问题'
+}
+const emotionMap: Record<string, string> = {
+    'neutral': '平静',
+    'frustrated': '烦躁',
+    'confused': '困惑',
+    'angry': '生气',
+    'excited': '兴奋',
+    'calm': '冷静',
+    'positive': '积极',
+    'negative': '消极'
 }
 
 const useRag = ref(true) //默认开启
@@ -195,6 +231,9 @@ async function sendMessage() {
         use_rag: useRag.value , // <--- 新增传参
         pack_id: selectedPackId.value // <--- 新增
         }, {
+            onAnalysis: (analysis) => { // 新增：接收到意图分析后存入消息对象
+                messages.value[aiMessageIndex].analysis = analysis
+            },
             onReferences: (refs) => { // <--- 新增监听
                 messages.value[aiMessageIndex].references = refs
             },
@@ -673,6 +712,38 @@ onMounted(() => {
     font-size: 12px;
     color: #10b981;
     font-weight: 600;
+}
+
+/* 意图与情绪标签样式 */
+.analysis-tags {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto; /* 靠右对齐 */
+}
+
+.tag {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+}
+
+.tag-intent {
+    background: rgba(10, 114, 239, 0.1);
+    color: var(--button-bg);
+}
+
+.tag-emotion {
+    background: rgba(245, 158, 11, 0.1);
+    color: #d97706;
+}
+
+.tag-no-rag {
+    background: var(--surface-subtle);
+    color: var(--text-muted);
 }
 
 .send-btn:disabled {

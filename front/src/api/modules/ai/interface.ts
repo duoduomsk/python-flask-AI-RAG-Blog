@@ -34,14 +34,22 @@ export interface AIChatResponse {
     error?: string
 }
 
+// 1. 新增 AIAnalysis 接口
+export interface AIAnalysis {
+    intent: string
+    emotion: string
+    need_rag: boolean
+}
+
 export interface AIStreamPayload {
-    type: 'start' | 'delta' | 'done' | 'error' | 'references' // <--- 新增 references
+    type: 'start' | 'delta' | 'done' | 'error' | 'references' | 'analysis'// <--- 新增 references,analysis
     content?: string
     message?: string
     context_length?: number
     model_used?: string
     provider_used?: string
     references?: ReferenceItem[] // <--- 新增
+    analysis?: AIAnalysis // 新增
 }
 
 export interface AIStreamHandlers {
@@ -50,6 +58,7 @@ export interface AIStreamHandlers {
     onDone?: (payload: AIStreamPayload) => void
     onError?: (message: string, payload?: AIStreamPayload) => void
     onReferences?: (references: ReferenceItem[], payload: AIStreamPayload) => void // <--- 新增
+    onAnalysis?: (analysis: AIAnalysis, payload: AIStreamPayload) => void // 新增
 }
 
 // AI 上下文响应数据接口

@@ -2,6 +2,7 @@
 from flask import Blueprint, request, jsonify, Response, stream_with_context
 import os
 from openai import OpenAI
+import time
 from sqlalchemy import text
 from backend.database import engine
 from backend.middleware import token_required
@@ -17,6 +18,9 @@ from celery.result import AsyncResult
 from backend.celery_app import celery_app
 from backend.rag.retriever import retrieve
 from backend.config import RAG_ENABLED, EMBEDDING_API_KEY
+from backend.rag.query_analyzer import analyze_query
+from backend.prompts.rag_prompts import build_system_prompt, BASE_RAG_PROMPT
+from backend.utils.ai_config import get_active_ai_config
 
 ai_bp = Blueprint('ai', __name__)
 
@@ -47,31 +51,37 @@ RAG_SYSTEM_PROMPT = """你是博客的 AI 助手。请优先基于【参考资�
 3. 若参考资料不足以回答，明确告知"博客中暂无相关内容"，然后才可用通用知识补充并声明"以下为通用知识"；
 4. 保持简洁，使用 Markdown。"""
 
-def get_active_ai_config():
-    """读取当前启用的 AI 配置，缺省回落到环境变量。"""
-    active_config = None
-    try:
-        with engine.connect() as conn:
-            row = conn.execute(
-                text("SELECT * FROM ai_configs WHERE is_active = 1 LIMIT 1")
-            ).mappings().fetchone()
-            if row:
-                active_config = dict(row)
-    except Exception as e:
-        print(f"Error fetching active config: {e}")
-
-    if not active_config:
-        active_config = {
-            'provider': 'volcano',
-            'api_key': os.environ.get('ARK_API_KEY', ''),
-            'base_url': 'https://ark.cn-beijing.volces.com/api/v3',
-            'model': 'ep-20260125005850-g97x2',
-            'system_prompt': 'You are a helpful assistant.'
-        }
-    return active_config
-
 def format_sse_event(payload):
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def log_ai_query(user_id, query, analysis, retrieved, latency_ms, model_name):
+    """将查询记录异步写入 MySQL（简单同步写，如果嫌慢可以扔给 Celery）"""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO ai_query_logs 
+                    (user_id, raw_query, rewritten_query, intent, sentiment, emotion, need_rag, retrieved_json, latency_ms, model)
+                    VALUES (:uid, :raw, :rewritten, :intent, :sentiment, :emotion, :need_rag, :retrieved, :latency, :model)
+                """),
+                {
+                    "uid": user_id,
+                    "raw": query,
+                    "rewritten": analysis.get("rewritten_query", query),
+                    "intent": analysis.get("intent", "unknown"),
+                    "sentiment": analysis.get("sentiment", "neutral"),
+                    "emotion": analysis.get("emotion", "neutral"),
+                    "need_rag": 1 if analysis.get("need_rag") else 0,
+                    "retrieved": json.dumps(retrieved, ensure_ascii=False),
+                    "latency": latency_ms,
+                    "model": model_name
+                }
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"记录日志失败: {e}")
+
 
 #非常重要，rag代词指代解决
 def rewrite_query_with_history(user_id, message, api_key, base_url, model_name):
@@ -110,13 +120,17 @@ def rewrite_query_with_history(user_id, message, api_key, base_url, model_name):
         print(f"[RAG 改写失败] {e}")
         return message  # 失败就降级用原句，不影响主流程
 
-def _build_messages(user_id, system_prompt, user_message, rag_chunks=None):
-    if rag_chunks:
+
+def _build_messages(user_id, system_prompt, user_message, rag_chunks=None, analysis=None):
+    # 如果是 RAG 模式且有检索结果，重写 System Prompt
+    if rag_chunks and analysis:
+        system_prompt = build_system_prompt(analysis.get("intent", "knowledge_qa"), analysis.get("emotion", "neutral"))
+
         refs = "\n\n".join(
             f"[{i + 1}]（来自《{c['title']}》{c['heading_path']}）\n{c['text']}"
             for i, c in enumerate(rag_chunks)
         )
-        system_prompt = f"{RAG_SYSTEM_PROMPT}\n\n【参考资料】\n{refs}"
+        system_prompt += f"\n\n【参考资料】\n{refs}"
 
     messages = [{"role": "system", "content": system_prompt or "You are a helpful assistant."}]
     messages.extend(get_ai_context(user_id))
@@ -201,31 +215,32 @@ def chat(current_user_id):
 # ============================================================
 # 流式聊天（SSE）
 # ============================================================
+# ============================================================
+# 流式聊天（SSE）- 完美融合意图识别与动态 RAG
+# ============================================================
 @ai_bp.route('/api/ai/chat/stream', methods=['POST'])
 @token_required
 def chat_stream(current_user_id):
     data = request.get_json() or {}
-
     user_id = current_user_id
-    # 新增接收 pack_id
     pack_id = data.get('pack_id')
     message = data.get('message')
-    use_rag = data.get('use_rag', False) and RAG_ENABLED and bool(EMBEDDING_API_KEY)
-    reset_context = data.get('reset_context', False)
-    active_config = get_active_ai_config()
 
+    # 前端如果强行传了 use_rag=False，我们就尊重前端；否则交给意图分析器决定
+    force_rag = data.get('use_rag')  # True, False, 或 None
+    reset_context = data.get('reset_context', False)
+
+    active_config = get_active_ai_config()
     model_provider = active_config.get('provider')
     model_name = active_config.get('model')
-    system_prompt = active_config.get('system_prompt') or 'You are a helpful assistant.'
     api_key = active_config.get('api_key')
     base_url = active_config.get('base_url')
-    temperature = data.get('temperature', 0.3)
-    max_tokens = data.get('max_tokens', 500)
 
     if reset_context:
         clear_ai_context(user_id)
 
     def generate():
+        # 处理重置上下文
         if reset_context and not message:
             yield format_sse_event({
                 'type': 'done',
@@ -244,52 +259,97 @@ def chat_stream(current_user_id):
             yield format_sse_event({'type': 'error', 'message': '未配置有效的 API Key，请联系管理员配置 AI'})
             return
 
-        # 1. 如果有 RAG，先进行多轮问题改写
-        search_query = message
-        if use_rag:
-            search_query = rewrite_query_with_history(user_id, message, api_key, base_url, model_name)
-
-        # 2. 使用改写后的句子去检索
-        article_ids = None
-        if pack_id:
-            with engine.connect() as conn:
-                rows = conn.execute(text("SELECT document_id FROM context_pack_documents WHERE pack_id = :pid"), {"pid": pack_id}).scalars().all()
-                article_ids = list(rows)
-                if not article_ids:
-                    article_ids = [-1] # 如果包是空的，给个不存在的 ID，确保检索结果为空
-
-        # 传给 retrieve
-        rag_chunks = retrieve(search_query, article_ids=article_ids) if use_rag else []
-
-        references = [
-            {"index": i + 1, "article_id": c["article_id"], "title": c["title"],
-             "score": round(c["score"], 3), "heading": c["heading_path"]}
-            for i, c in enumerate(rag_chunks)
-        ]
-
-        # 2. 拼装
-        messages = _build_messages(user_id, system_prompt, message, rag_chunks)
-        assistant_reply = ''
-        actual_max_tokens = 1500 if use_rag else max_tokens
-
         try:
+            # ========================================================
+            # 1. 意图与情绪分析 (大模型前置分析)
+            # ========================================================
+            analysis = analyze_query(user_id, message)
+
+            # 立即推送分析事件给前端，让前端可以展示“意图/情绪”标签
+            yield format_sse_event({
+                'type': 'analysis',
+                'analysis': {
+                    'intent': analysis.get('intent'),
+                    'emotion': analysis.get('emotion'),
+                    'need_rag': analysis.get('need_rag')
+                }
+            })
+
+            # 决定是否走 RAG
+            use_rag = analysis.get('need_rag', True) and RAG_ENABLED and bool(EMBEDDING_API_KEY)
+            if force_rag is False:
+                use_rag = False
+
+            # 获取改写后的搜索词 (如果没有改写，就用原句)
+            search_query = analysis.get('rewritten_query') or message
+
+            # ========================================================
+            # 2. RAG 检索 (混合检索 + 精排)
+            # ========================================================
+            article_ids = None
+            if pack_id and use_rag:
+                with engine.connect() as conn:
+                    rows = conn.execute(
+                        text("SELECT document_id FROM context_pack_documents WHERE pack_id = :pid"),
+                        {"pid": pack_id}
+                    ).scalars().all()
+                    article_ids = list(rows) if rows else [-1]
+
+            rag_chunks = []
+            start_time = time.time()  # ⚠️ 新增：开始计时
+            if use_rag:
+                rag_chunks = retrieve(search_query, article_ids=article_ids)
+
+            # 记录检索耗时
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            references = [
+                {"index": i + 1, "article_id": c["article_id"], "title": c["title"],
+                 "score": round(c.get("rerank_score", c["score"]), 3), "heading": c["heading_path"]}
+                for i, c in enumerate(rag_chunks)
+            ]
+
+            # ⚠️ 新增：写入数据库
+            if use_rag:
+                log_ai_query(
+                    user_id=user_id,
+                    query=message,
+                    analysis=analysis,
+                    retrieved=references,
+                    latency_ms=latency_ms,
+                    model_name=model_name
+                )
+
+            # ========================================================
+            # 3. 构建 Prompt 并调用大模型
+            # ========================================================
+            # 注意：这里不再需要手动判断 use_rag，_build_messages 里会自动处理 analysis 和 rag_chunks
+            messages = _build_messages(user_id, None, message, rag_chunks, analysis)
+
+            assistant_reply = ''
+            # 如果是 RAG，允许长一点；闲聊就短一点
+            actual_max_tokens = 1500 if use_rag else 500
+
             client = OpenAI(base_url=base_url, api_key=api_key)
 
+            # 发送开始生成的信号
             yield format_sse_event({
                 'type': 'start',
                 'model_used': model_name,
                 'provider_used': model_provider,
             })
 
-            # 推送参考资料给前端
-            if use_rag:
+            # 发送参考资料引用
+            if use_rag and references:
                 yield format_sse_event({'type': 'references', 'references': references})
 
+            # 调用大模型流式接口
             response = client.chat.completions.create(
                 model=model_name,
                 messages=messages,
                 stream=True,
-                temperature=temperature,
+                # 排错场景 temperature 降低，保证严谨；其他场景发挥创造性
+                temperature=0.3 if analysis.get('intent') == 'troubleshooting' else 0.7,
                 max_tokens=actual_max_tokens,
             )
 
@@ -302,18 +362,23 @@ def chat_stream(current_user_id):
                 assistant_reply += delta
                 yield format_sse_event({'type': 'delta', 'content': delta})
 
-            # 落库到 Redis
+            # ========================================================
+            # 4. 保存对话上下文
+            # ========================================================
             append_ai_message(user_id, {"role": "user", "content": message})
             append_ai_message(user_id, {"role": "assistant", "content": assistant_reply})
-            ctx_len = len(get_ai_context(user_id)) + 1
 
+            # 发送结束信号
             yield format_sse_event({
                 'type': 'done',
-                'context_length': ctx_len,
+                'context_length': len(get_ai_context(user_id)) + 1,
                 'model_used': model_name,
                 'provider_used': model_provider,
             })
+
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             yield format_sse_event({'type': 'error', 'message': f'请求失败: {str(e)}'})
 
     headers = {

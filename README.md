@@ -1,6 +1,6 @@
 # AI-Vue3-python-flask-Blog
 
-**Vue 3 + Python Flask + Celery + Redis + MySQL + Docker + RAG** 全栈 AI 博客系统。
+**Vue 3 + Python Flask + Celery + Redis + MySQL + Docker + RAG混合检索和情绪意图识别** 全栈 AI 博客系统。
 
 本项目已经包含前台博客、后台管理、后端 API、数据库、登录鉴权、文章管理、评论收藏和基础 AI 能力。它不是一个空壳模板，而是可以直接运行、部署、演示和继续扩展的完整项目。
 
@@ -12,7 +12,7 @@
 
 如果你想对这个项目做扩展最好采用原作者linsk27的基础框架，因为现在这个作品不保证兼容性。
 
-适合搜索关键词：**Vue Flask 前后端分离、AI 博客系统、MySQL 管理系统、前后端分离博客系统、Celery、Redis、Docker、基础RAG**。
+适合搜索关键词：**Vue Flask 前后端分离、AI 博客系统、MySQL 管理系统、前后端分离博客系统、Celery、Redis、Docker、RAG(意图识别，混合检索版)**。
 
 ## 使用声明
 

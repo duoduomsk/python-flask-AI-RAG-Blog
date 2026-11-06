@@ -12,6 +12,12 @@ function getApiUrl(url: string) {
 }
 
 function dispatchStreamPayload(payload: AIStreamPayload, handlers: AIStreamHandlers) {
+    // 新增：拦截 analysis 事件
+    if (payload.type === 'analysis') {
+        handlers.onAnalysis?.(payload.analysis!, payload)
+        return
+    }
+
     if (payload.type === 'start') {
         handlers.onStart?.(payload)
         return
